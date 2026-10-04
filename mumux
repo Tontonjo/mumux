@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # mumux: simple tmux manager (mouse + keyboard), formerly gmux
-# Version: 1.16.0
+# Version: 1.20.0
 """
 Usage:
   mumux              outside tmux: session manager / inside tmux: menu
@@ -12,7 +12,7 @@ Usage:
   mumux uninstall    remove the mumux config
   mumux -v           show the version
 """
-VERSION = "1.17.0"
+VERSION = "1.20.0"
 
 import curses
 import json
@@ -753,8 +753,10 @@ def windows_conf():
     return [
         "set -g window-status-separator ''",
         "set -g window-status-format ' #I:#W#{?window_zoomed_flag, [Z],} '",
-        f"set -g window-status-current-format ' #I:#W#{{?window_zoomed_flag, [Z],}}"
-        f"#{{?{IS_SPLIT}, > {PANE_LABEL},}} '",  # active pane when split
+        # only "menu" while the mumux menu is the active pane, else the window
+        # (and the active pane when split)
+        f"set -g window-status-current-format '#{{?{IS_MENU}, menu ,"
+        f" #I:#W#{{?window_zoomed_flag, [Z],}}#{{?{IS_SPLIT}, > {PANE_LABEL},}} }}'",
         "set -g window-status-current-style 'fg=black,bg=yellow,bold'",
         # index 90: keeps any session-window-changed hook the user set at index 0
         "set-hook -g session-window-changed[90] "
@@ -792,10 +794,12 @@ def mumux_conf():
         *windows_conf(),
         *panes_conf(),
         f"bind m {MENU_BIND}",
-        # left click on the session name, right click anywhere on the status bar
-        *(f"bind -n {ev} {MENU_BIND}"
-          for ev in ("MouseUp1StatusLeft", "MouseUp3StatusLeft", "MouseUp3Status",
-                     "MouseUp3StatusRight")),
+        # left click on the session name, right click anywhere on the status bar.
+        # MouseDragEnd: tmux turns a click into a drag when the mouse moves by
+        # one cell between press and release, so those clicks count too.
+        *(f"bind -n Mouse{kind}{ev} {MENU_BIND}"
+          for kind in ("Up", "DragEnd")
+          for ev in ("1StatusLeft", "3StatusLeft", "3Status", "3StatusRight")),
         # remove native menus opened on press, including those of older versions
         *(f"unbind -n {ev}" for ev in ("MouseDown1StatusLeft", "MouseDown3StatusLeft",
                                         "MouseDown3Status", "MouseDown3StatusRight")),
