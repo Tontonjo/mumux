@@ -1,6 +1,6 @@
 <img width="1024" height="293" alt="mumux-logo-dark" src="https://github.com/user-attachments/assets/b2529cac-c9bd-4c02-9992-40e9409962f9" />
 
-> **mumux 1.20.0** · doc rev. 2 · October 3, 2026 · formerly **gmux**
+> **mumux 1.24.0** · doc rev. 2 · October 3, 2026 · formerly **gmux**
 
 A simple interface for **tmux**, made by somebody who always forgets how to use
 it: a **session manager** to create, join, rename or kill sessions, and a
