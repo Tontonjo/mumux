@@ -27,10 +27,10 @@ Copy and paste using mouse only: selected text is directly added to your clipboa
 
 Requirements:  
 Required: `tmux` and `python3` - (already present on Debian, Ubuntu and Raspberry Pi OS).  
-Optional but usefull: `xclip` - recommanded to ensure copy / paste is working
+Optional but usefull: `xclip` and `xauth` - recommanded to ensure copy / paste is working
 
 ```bash
-sudo apt install -y tmux python3 xclip
+sudo apt install -y tmux python3 xclip xauth
 sudo curl -fsSL https://raw.githubusercontent.com/Tontonjo/mumux/main/mumux -o /usr/local/bin/mumux
 sudo chmod +x /usr/local/bin/mumux
 mumux
