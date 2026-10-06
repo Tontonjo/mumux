@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # mumux: simple tmux manager (mouse + keyboard), formerly gmux
-# Version: 1.20.0
+# Version: 1.24.0
 """
 Usage:
   mumux              outside tmux: session manager / inside tmux: menu
@@ -10,9 +10,10 @@ Usage:
   mumux install      generate the mumux config, link it from ~/.tmux.conf and reload
                     (automatic on first run and after an update)
   mumux uninstall    remove the mumux config
+  mumux copy-select  toggle "Mouse copy on selection" (also in the menu, Settings)
   mumux -v           show the version
 """
-VERSION = "1.20.0"
+VERSION = "1.24.0"
 
 import curses
 import json
@@ -28,6 +29,7 @@ INSIDE = bool(os.environ.get("TMUX"))
 CONF = os.path.expanduser("~/.tmux.conf")
 MUMUX_CONF = os.path.expanduser("~/.config/mumux/mumux.tmux.conf")
 CLIP_SH = os.path.expanduser("~/.config/mumux/clip.sh")
+SETTINGS = os.path.expanduser("~/.config/mumux/settings.tmux.conf")  # menu settings kept across restarts
 LEGACY_DIR = os.path.expanduser("~/.config/gmux")  # config of gmux, the former name
 
 
@@ -338,6 +340,7 @@ def menu_items():
         ],
         "Settings": [
             ("Mouse #{?mouse,[on],[off]}", "m", "set -g mouse"),
+            (f"Mouse copy on selection #{{?{COPY_ALT},[off],[on]}}", "a", f"run-shell -b '{me} copy-select'"),
             ("Sync panes #{?synchronize-panes,[on],[off]}", "y", "set -w synchronize-panes"),
             ("Reload ~/.tmux.conf", "r", f'source-file "{CONF}" ; display "Config reloaded"'),
         ],
@@ -646,6 +649,9 @@ def run_menu(orig=None):
 # one is reachable: a local desktop, or X11 forwarding (MobaXterm, ssh -X) whose
 # clipboard is synced with the PC. Then it confirms the copy.
 
+COPY_ALT = "@mumux-copy-alt"  # tmux option: "on" = "Mouse copy on selection" off: copy only with Alt
+ALT_DRAG = "@mumux-alt-drag"  # pane option: the current drag started with Alt held
+
 OSC52_TERMS = ("xterm*", "screen*", "tmux*", "*kitty*", "alacritty*", "foot*",
                "wezterm*", "rxvt*", "st-*", "putty*")  # not "linux": its console prints OSC
 
@@ -682,7 +688,8 @@ tmux display-message -d 4000 "$msg" 2>/dev/null || {{
 
 def clipboard_conf():
     """Mouse copy and paste: drag, double click (word) or triple click (line)
-    copies; middle or right click pastes."""
+    copies; middle or right click pastes. With "Mouse copy on selection" off,
+    the same gestures only select, and copy when Alt is held."""
     clip = f"sh '{CLIP_SH}'"
     copy = f'copy-pipe-and-cancel "{clip}"'
     # Copy a moment later when tmux has just redrawn (entering copy mode, option
@@ -695,25 +702,64 @@ def clipboard_conf():
                  f'{{ set -w mode-keys vi ; run-shell -b "{later_sh} ; '
                  f'tmux set-option -wu -t #{{pane_id}} mode-keys" }} '
                  f"{{ send -X {copy} }}")
+    # "Mouse copy on selection": a plain gesture copies only while it is on; a
+    # drag copies if Alt was held when it started (Alt may be released first).
+    plain = f"#{{?{COPY_ALT},0,1}}"
+    drag_end = (f"{{ if -F '#{{||:{plain},#{{{ALT_DRAG}}}}}' {{ {drag_copy} }} ; "
+                f"set -pu {ALT_DRAG} }}")
     paste_or_app = ("if -Ft= '#{||:#{mouse_any_flag},#{pane_in_mode}}' "
                     "{ select-pane -t= ; send -M } { select-pane -t= ; paste-buffer -p }")
 
-    def select(action):  # from normal mode: enter copy mode, select, copy
+    def copy_now(alt):  # copy the selection just made (double / triple click)
+        return later if alt else f"if -F '{plain}' {{ {later} }}"
+
+    def select(action, alt):  # from normal mode: enter copy mode, select, copy
         return (f"if -Ft= '#{{mouse_any_flag}}' {{ select-pane -t= ; send -M }} "
-                f"{{ select-pane -t= ; copy-mode -t= ; send -X -t= {action} ; {later} }}")
+                f"{{ select-pane -t= ; copy-mode -t= ; send -X -t= {action} ; {copy_now(alt)} }}")
 
     lines = ["set -s set-clipboard on"]
     lines += [f"set -s terminal-overrides[{90 + i}] '{t}:Ms=\\E]52;%p1%s;%p2%s\\007'"
               for i, t in enumerate(OSC52_TERMS)]
+    # Alt + drag starts a selection like a plain drag, and remembers Alt
+    lines.append(f"bind -n M-MouseDrag1Pane {{ set -p -t= {ALT_DRAG} 1 ; "
+                 "if -Ft= '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send -M } { copy-mode -M } }")
     for table in ("copy-mode", "copy-mode-vi"):
-        lines += [f"bind -T {table} MouseDragEnd1Pane {drag_copy}",
-                  f"bind -T {table} DoubleClick1Pane {{ select-pane ; send -X select-word ; {later} }}",
-                  f"bind -T {table} TripleClick1Pane {{ select-pane ; send -X select-line ; {later} }}"]
-    lines += [f"bind -n DoubleClick1Pane {select('select-word')}",
-              f"bind -n TripleClick1Pane {select('select-line')}",
-              f"bind -n MouseDown2Pane {paste_or_app}",
+        lines += [f"bind -T {table} M-MouseDrag1Pane {{ set -p {ALT_DRAG} 1 ; select-pane ; "
+                  "send -X begin-selection }"]
+        # a click drops a selection left uncopied (copy on selection off), and leaves
+        # copy mode when the pane is not scrolled back in its history
+        lines += [f"bind -T {table} MouseDown1Pane {{ select-pane ; "
+                  f"if -F '#{{&&:#{{{COPY_ALT}}},#{{selection_present}}}}' "
+                  "{ if -F '#{scroll_position}' { send -X clear-selection } { send -X cancel } } }"]
+        for mod, alt in (("", False), ("M-", True)):
+            lines += [f"bind -T {table} {mod}MouseDragEnd1Pane {drag_end}",
+                      f"bind -T {table} {mod}DoubleClick1Pane "
+                      f"{{ select-pane ; send -X select-word ; {copy_now(alt)} }}",
+                      f"bind -T {table} {mod}TripleClick1Pane "
+                      f"{{ select-pane ; send -X select-line ; {copy_now(alt)} }}"]
+    for mod, alt in (("", False), ("M-", True)):
+        lines += [f"bind -n {mod}DoubleClick1Pane {select('select-word', alt)}",
+                  f"bind -n {mod}TripleClick1Pane {select('select-line', alt)}"]
+    lines += [f"bind -n MouseDown2Pane {paste_or_app}",
               f"bind -n MouseDown3Pane {paste_or_app}"]  # replaces the native pane menu
     return lines
+
+
+def toggle_copy_select():
+    """Turn "Mouse copy on selection" on or off, now and for the next tmux
+    starts. Off is stored as COPY_ALT "on" (copy only with Alt)."""
+    _, out = tmux("show-options", "-gqv", COPY_ALT)
+    if out.strip() != "on":  # copy on selection is on: turn it off
+        tmux("set-option", "-g", COPY_ALT, "on")
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        with open(SETTINGS, "w") as f:
+            f.write(f"# Generated by mumux: settings chosen in the menu\nset -g {COPY_ALT} on\n")
+        notify("Mouse copy on selection: off. Hold Alt while selecting to copy")
+    else:
+        tmux("set-option", "-gu", COPY_ALT)
+        if os.path.exists(SETTINGS):
+            os.remove(SETTINGS)
+        notify("Mouse copy on selection: on. Mouse selections are copied directly")
 
 
 # ---------------------------------------------------------------- install
@@ -784,6 +830,8 @@ def mumux_conf():
     return "\n".join([
         f"# Generated by mumux v{VERSION}. Do not edit: regenerated automatically by mumux.",
         "set -g mouse on",
+        "set -gu @mumux-no-select-copy", "set -gu @mumux-no-auto-copy",  # discarded 1.22/1.23
+        f'source-file -q "{SETTINGS}"',  # settings chosen in the menu (Mouse copy on selection)
         # clean up the status bar set by gmux < 1.6 (monitoring removed)
         "if-shell -F '#{m:*gmux*status*,#{status-left}}' "
         "'set -gu status-left ; set -gu status-left-length ; set -gu status-interval'",
@@ -821,20 +869,26 @@ def strip_block(text):
 
 
 def remove_legacy():
-    """Delete the config generated by gmux (former name), if any."""
+    """Delete the config generated by gmux (former name), and convert
+    settings of discarded versions, if any."""
     for name in ("gmux.tmux.conf", "clip.sh"):
         path = os.path.join(LEGACY_DIR, name)
         if os.path.exists(path):
             os.remove(path)
     if os.path.isdir(LEGACY_DIR) and not os.listdir(LEGACY_DIR):
         os.rmdir(LEGACY_DIR)
+    # settings file of the discarded 1.22.0 / 1.23.0: "copy off" becomes copy only with Alt
+    text = open(SETTINGS).read() if os.path.exists(SETTINGS) else ""
+    if "@mumux-no-select-copy" in text or "@mumux-no-auto-copy" in text:
+        with open(SETTINGS, "w") as f:
+            f.write(f"# Generated by mumux: settings chosen in the menu\nset -g {COPY_ALT} on\n")
 
 
 def run_install(remove=False, quiet=False):
     text = strip_block(open(CONF).read() if os.path.exists(CONF) else "")
     remove_legacy()
     if remove:
-        for path in (MUMUX_CONF, CLIP_SH):
+        for path in (MUMUX_CONF, CLIP_SH, SETTINGS):
             if os.path.exists(path):
                 os.remove(path)
     else:
@@ -904,6 +958,8 @@ def main():
         tmux("send-keys", "-X", "-t", args[1], "copy-pipe-and-cancel", f"sh '{CLIP_SH}'")
         if args[2:3] == ["vi"]:  # the old binding switched mode-keys for this copy
             tmux("set-option", "-wu", "-t", args[1], "mode-keys")
+    elif cmd == "copy-select":
+        toggle_copy_select()
     elif cmd in ("install", "uninstall"):
         run_install(remove=cmd == "uninstall")
     elif cmd in ("-v", "--version"):
